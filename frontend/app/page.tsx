@@ -6,7 +6,6 @@ import { feature } from "topojson-client";
 import type { Topology } from "topojson-specification";
 import { AirportNode, FlightEdge, GraphData, PathResult } from "@/types";
 
-
 const CONTINENT_COLORS: Record<string, string> = {
   EU: "#3b82f6",
   NA: "#22c55e",
@@ -24,29 +23,17 @@ const CONTINENT_LABELS: Record<string, string> = {
 };
 
 const RUNWAY_COLORS: Record<number, string> = {
-  1: "#4ade80",
-  2: "#a3e635",
-  3: "#facc15",
-  4: "#fb923c",
-  5: "#f87171",
-  6: "#e879f9",
-  7: "#a855f7",
+  1: "#4ade80", 2: "#a3e635", 3: "#facc15",
+  4: "#fb923c", 5: "#f87171", 6: "#e879f9", 7: "#a855f7",
 };
 const RUNWAY_MAX = 7;
 
 export type ColorMode = "continent" | "runways";
 export type SizeMode  = "degree"    | "runways";
 
-
-function nodeColor(
-  node: AirportNode,
-  colorMode: ColorMode,
-  isSelected: boolean,
-  isPath: boolean,
-  isNeighbor: boolean,
-): string {
+function nodeColor(node: AirportNode, colorMode: ColorMode, isSelected: boolean, isPath: boolean, isNeighbor: boolean): string {
   if (isSelected || isPath) return "#fbbf24";
-  if (isNeighbor)           return "#60a5fa";
+  if (isNeighbor) return "#60a5fa";
   if (colorMode === "runways") {
     const r = Math.max(1, Math.min(RUNWAY_MAX, Math.round(node.runways ?? 1)));
     return RUNWAY_COLORS[r] ?? "#94a3b8";
@@ -54,21 +41,14 @@ function nodeColor(
   return CONTINENT_COLORS[node.continent] ?? "#94a3b8";
 }
 
-function nodeRadius(
-  node: AirportNode,
-  sizeMode: SizeMode,
-  maxDegree: number,
-  isSelected: boolean,
-): number {
-  const base =
-    sizeMode === "runways"
-      ? 3 + ((node.runways ?? 1) / RUNWAY_MAX) * 11
-      : 3 + (Math.log1p(node.degree) / Math.log1p(maxDegree)) * 10;
+function nodeRadius(node: AirportNode, sizeMode: SizeMode, maxDegree: number, isSelected: boolean): number {
+  const base = sizeMode === "runways"
+    ? 3 + ((node.runways ?? 1) / RUNWAY_MAX) * 11
+    : 3 + (Math.log1p(node.degree) / Math.log1p(maxDegree)) * 10;
   return isSelected ? base + 3 : base;
 }
 
-
-interface GraphSVGProps {
+interface GraphViewProps {
   data: GraphData;
   selectedIata: string | null;
   pathIatas: string[];
@@ -77,53 +57,140 @@ interface GraphSVGProps {
   sizeMode: SizeMode;
 }
 
-function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode }: GraphSVGProps) {
+function GraphView({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
   const svgRef       = useRef<SVGSVGElement>(null);
   const gRef         = useRef<SVGGElement>(null);
   const zoomRef      = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [tooltip, setTooltip]   = useState<{ x: number; y: number; text: string } | null>(null);
-  const [worldGeo, setWorldGeo] = useState<GeoJSON.FeatureCollection | null>(null);
+  const selectedRef = useRef(selectedIata);
+  const pathSetRef  = useRef(new Set(pathIatas));
+  useEffect(() => { selectedRef.current = selectedIata; }, [selectedIata]);
+
+  const [tooltip,    setTooltip]    = useState<{ x: number; y: number; text: string } | null>(null);
+  const [worldGeo,   setWorldGeo]   = useState<GeoJSON.FeatureCollection | null>(null);
   const [dimensions, setDimensions] = useState({ w: 0, h: 0 });
 
   const projection = useMemo(() => {
-    if (!worldGeo || dimensions.w === 0) return null;
+    if (!worldGeo || !dimensions.w) return null;
     return d3.geoNaturalEarth1().fitSize([dimensions.w, dimensions.h], worldGeo);
   }, [worldGeo, dimensions]);
 
-  const maxDegree = useMemo(
-    () => Math.max(1, ...data.nodes.map(n => n.degree)),
-    [data.nodes],
-  );
-
-  const nodeMap = useMemo(
-    () => new Map(data.nodes.map(n => [n.iata, n])),
-    [data.nodes],
-  );
-
-  const pathSet = useMemo(() => new Set(pathIatas), [pathIatas]);
-
+  const maxDegree   = useMemo(() => Math.max(1, ...data.nodes.map(n => n.degree)), [data.nodes]);
+  const nodeMap     = useMemo(() => new Map(data.nodes.map(n => [n.iata, n])), [data.nodes]);
+  const pathSet     = useMemo(() => new Set(pathIatas), [pathIatas]);
   const neighborSet = useMemo(() => {
     if (!selectedIata) return new Set<string>();
     const s = new Set<string>();
     for (const e of data.edges) {
-      if (e.src === selectedIata) s.add(e.dest);
+      if (e.src  === selectedIata) s.add(e.dest);
       if (e.dest === selectedIata) s.add(e.src);
     }
     return s;
   }, [selectedIata, data.edges]);
 
+  useEffect(() => { pathSetRef.current = pathSet; }, [pathSet]);
+
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const ro = new ResizeObserver(entries => {
-      const { width, height } = entries[0].contentRect;
-      setDimensions({ w: width, h: height });
-    });
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, []);
+    if (!worldGeo || !projection || !dimensions.w) return;
+    const off = document.createElement("canvas");
+    off.width  = dimensions.w;
+    off.height = dimensions.h;
+    const ctx = off.getContext("2d")!;
+    const pathGen = d3.geoPath().projection(projection).context(ctx);
+    ctx.beginPath();
+    for (const f of worldGeo.features) pathGen(f as any);
+    ctx.fillStyle   = "#1e293b";
+    ctx.fill();
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth   = 0.5;
+    ctx.stroke();
+    offscreenRef.current = off;
+  }, [worldGeo, projection, dimensions]);
+
+  const drawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const svg    = svgRef.current;
+    if (!canvas || !svg || !projection) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const { x, y, k } = d3.zoomTransform(svg);
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, "#0f172a");
+    grad.addColorStop(1, "#1e293b");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(k, k);
+
+    if (offscreenRef.current) {
+      ctx.drawImage(offscreenRef.current, 0, 0);
+    }
+
+    const pathEdgeSet = new Set<string>();
+    for (let i = 0; i < pathIatas.length - 1; i++) {
+      pathEdgeSet.add(`${pathIatas[i]}|${pathIatas[i + 1]}`);
+      pathEdgeSet.add(`${pathIatas[i + 1]}|${pathIatas[i]}`);
+    }
+
+    const buckets: Record<"path" | "highlighted" | "dimmed" | "normal", FlightEdge[]> = {
+      path: [], highlighted: [], dimmed: [], normal: [],
+    };
+    for (const edge of data.edges) {
+      if (pathEdgeSet.has(`${edge.src}|${edge.dest}`)) {
+        buckets.path.push(edge);
+      } else if (selectedIata && (edge.src === selectedIata || edge.dest === selectedIata)) {
+        buckets.highlighted.push(edge);
+      } else if (selectedIata || pathSet.size > 0) {
+        buckets.dimmed.push(edge);
+      } else {
+        buckets.normal.push(edge);
+      }
+    }
+
+    const styles = {
+      path:        { color: "#fbbf24", width: 2.5, alpha: 1.0  },
+      highlighted: { color: "#60a5fa", width: 1.2, alpha: 0.85 },
+      dimmed:      { color: "#334155", width: 0.5, alpha: 0.3  },
+      normal:      { color: "#475569", width: 0.5, alpha: 0.45 },
+    };
+
+    for (const bucket of ["normal", "dimmed", "highlighted", "path"] as const) {
+      const edges = buckets[bucket];
+      if (!edges.length) continue;
+      const s = styles[bucket];
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth   = s.width / k;
+      ctx.globalAlpha = s.alpha;
+      ctx.beginPath();
+      for (const edge of edges) {
+        const a = nodeMap.get(edge.src);
+        const b = nodeMap.get(edge.dest);
+        if (!a || !b) continue;
+        const pa = projection([a.lon, a.lat]);
+        const pb = projection([b.lon, b.lat]);
+        if (!pa || !pb) continue;
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+      }
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }, [projection, data.edges, selectedIata, pathIatas, pathSet, nodeMap]);
+
+  const drawCanvasRef = useRef(drawCanvas);
+  useEffect(() => { drawCanvasRef.current = drawCanvas; }, [drawCanvas]);
 
   useEffect(() => {
     if (!svgRef.current || !gRef.current) return;
@@ -132,86 +199,55 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
 
     zoomRef.current = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.3, 30])
-      .on("zoom", event => g.attr("transform", event.transform));
+      .on("zoom", event => {
+        g.attr("transform", event.transform);
+        g.selectAll<SVGTextElement, AirportNode>("text")
+          .attr("opacity", d =>
+            (d.iata === selectedRef.current || pathSetRef.current.has(d.iata) || event.transform.k > 2) ? 1 : 0
+          );
+        drawCanvasRef.current();
+      });
 
     svg.call(zoomRef.current);
     return () => { svg.on(".zoom", null); };
   }, []);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas    = canvasRef.current;
+    if (!container || !canvas) return;
+    const ro = new ResizeObserver(() => {
+      canvas.width  = container.clientWidth;
+      canvas.height = container.clientHeight;
+      setDimensions({ w: container.clientWidth, h: container.clientHeight });
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json")
       .then(r => r.json())
       .then((topo: Topology) => {
-        const countries = feature(topo, (topo as any).objects.countries) as GeoJSON.FeatureCollection;
-        setWorldGeo(countries);
+        setWorldGeo(feature(topo, (topo as any).objects.countries) as GeoJSON.FeatureCollection);
       })
       .catch(console.error);
   }, []);
 
-  useEffect(() => {
-    if (!projection || !gRef.current || !worldGeo) return;
-    const g       = d3.select(gRef.current);
-    const pathGen = d3.geoPath().projection(projection);
-
-    g.select(".world").remove();
-    g.insert("g", ":first-child")
-      .attr("class", "world")
-      .selectAll("path")
-      .data(worldGeo.features)
-      .join("path")
-      .attr("d", pathGen as any)
-      .attr("fill", "#1e293b")
-      .attr("stroke", "#334155")
-      .attr("stroke-width", 0.5)
-      .style("pointer-events", "none");
-  }, [projection, worldGeo]);
+  useEffect(() => { drawCanvas(); }, [drawCanvas]);
 
   useEffect(() => {
     if (!projection || !gRef.current) return;
     const g = d3.select(gRef.current);
+    const currentK = svgRef.current ? d3.zoomTransform(svgRef.current).k : 1;
 
-    const pathEdges = new Set<string>();
-    for (let i = 0; i < pathIatas.length - 1; i++) {
-      pathEdges.add(`${pathIatas[i]}|${pathIatas[i + 1]}`);
-      pathEdges.add(`${pathIatas[i + 1]}|${pathIatas[i]}`);
-    }
-
-    const nodeState = new Map(
-      data.nodes.map(d => {
-        const isSelected = d.iata === selectedIata;
-        const isPath     = pathSet.has(d.iata);
-        const isNeighbor = neighborSet.has(d.iata);
-        const isDimmed   = Boolean((selectedIata || pathSet.size > 0) && !isSelected && !isNeighbor && !isPath);
-        return [d.iata, { isSelected, isPath, isNeighbor, isDimmed }];
-      }),
-    );
-
-    let edgesG = g.select<SVGGElement>(".edges");
-    if (edgesG.empty()) edgesG = g.append("g").attr("class", "edges");
-
-    edgesG
-      .selectAll<SVGLineElement, FlightEdge>("line")
-      .data(data.edges, d => `${d.src}|${d.dest}`)
-      .join("line")
-      .attr("x1", d => (projection([nodeMap.get(d.src)!.lon, nodeMap.get(d.src)!.lat]) ?? [0, 0])[0])
-      .attr("y1", d => (projection([nodeMap.get(d.src)!.lon, nodeMap.get(d.src)!.lat]) ?? [0, 0])[1])
-      .attr("x2", d => (projection([nodeMap.get(d.dest)!.lon, nodeMap.get(d.dest)!.lat]) ?? [0, 0])[0])
-      .attr("y2", d => (projection([nodeMap.get(d.dest)!.lon, nodeMap.get(d.dest)!.lat]) ?? [0, 0])[1])
-      .attr("stroke", d => {
-        const key = `${d.src}|${d.dest}`;
-        if (pathEdges.has(key)) return "#fbbf24";
-        if (selectedIata && (d.src === selectedIata || d.dest === selectedIata)) return "#60a5fa";
-        return (selectedIata || pathSet.size > 0) ? "#334155" : "#475569";
-      })
-      .attr("stroke-width", d => pathEdges.has(`${d.src}|${d.dest}`) ? 2.5 : 0.5)
-      .attr("opacity", d => {
-        const key = `${d.src}|${d.dest}`;
-        if (pathEdges.has(key)) return 1;
-        if (selectedIata && (d.src === selectedIata || d.dest === selectedIata)) return 0.85;
-        return (selectedIata || pathSet.size > 0) ? 0.3 : 0.45;
-      })
-      .style("pointer-events", "none");
+    const nodeState = new Map(data.nodes.map(d => {
+      const isSelected = d.iata === selectedIata;
+      const isPath     = pathSet.has(d.iata);
+      const isNeighbor = neighborSet.has(d.iata);
+      const isDimmed   = Boolean((selectedIata || pathSet.size > 0) && !isSelected && !isNeighbor && !isPath);
+      return [d.iata, { isSelected, isPath, isNeighbor, isDimmed }];
+    }));
 
     let nodesG = g.select<SVGGElement>(".nodes");
     if (nodesG.empty()) nodesG = g.append("g").attr("class", "nodes");
@@ -226,8 +262,8 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
         return ng;
       })
       .attr("transform", d => {
-        const [x, y] = projection([d.lon, d.lat]) ?? [0, 0];
-        return `translate(${x},${y})`;
+        const [px, py] = projection([d.lon, d.lat]) ?? [0, 0];
+        return `translate(${px},${py})`;
       })
       .on("click", (event, d) => {
         event.stopPropagation();
@@ -250,13 +286,13 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
           .attr("filter",       (s.isSelected || s.isPath) ? "url(#glow)" : null);
 
         d3.select(this).select("text")
-          .attr("dy",       -(r + 3))
+          .attr("dy",        -(r + 3))
           .attr("font-size", 8)
           .attr("fill",      "#f1f5f9")
-          .attr("opacity",   (s.isSelected || s.isPath) ? 1 : 0)
+          .attr("opacity",   (s.isSelected || s.isPath || currentK > 2) ? 1 : 0)
           .text(d.iata);
       });
-  }, [projection, data, selectedIata, pathIatas, pathSet, neighborSet, nodeMap, colorMode, sizeMode, maxDegree, onSelect]);
+  }, [projection, data.nodes, selectedIata, pathIatas, pathSet, neighborSet, colorMode, sizeMode, maxDegree, onSelect]);
 
   const resetZoom = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return;
@@ -267,10 +303,10 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
 
   return (
     <div ref={containerRef} className="relative w-full h-full">
+      <canvas ref={canvasRef} className="absolute inset-0" />
       <svg
         ref={svgRef}
-        className="w-full h-full"
-        style={{ background: "linear-gradient(to bottom, #0f172a, #1e293b)" }}
+        className="absolute inset-0 w-full h-full"
         onClick={() => onSelect(null)}
       >
         <defs>
@@ -290,7 +326,7 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
           className="pointer-events-none fixed z-50 rounded px-2 py-1 text-xs text-white shadow-lg"
           style={{
             left: tooltip.x,
-            top: tooltip.y,
+            top:  tooltip.y,
             background: "rgba(15,23,42,0.92)",
             border: "1px solid rgba(100,116,139,0.4)",
           }}
@@ -309,7 +345,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
     </div>
   );
 }
-
 
 interface NodeInfoPanelProps {
   iata: string;
@@ -427,19 +462,19 @@ function NodeInfoPanel({ iata, onClose, onPathFrom, onPathTo, pathFrom, pathTo }
 }
 
 export default function Home() {
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
-  const [loading,   setLoading]   = useState(false);
-  const [loadError, setLoadError] = useState("");
+  const [graphData,    setGraphData]    = useState<GraphData>({ nodes: [], edges: [] });
+  const [loading,      setLoading]      = useState(false);
+  const [loadError,    setLoadError]    = useState("");
   const [selectedIata, setSelectedIata] = useState<string | null>(null);
 
   const [colorMode, setColorMode] = useState<ColorMode>("continent");
   const [sizeMode,  setSizeMode]  = useState<SizeMode>("degree");
 
-  const [filterContinent,  setFilterContinent]  = useState("");
-  const [filterCountry,    setFilterCountry]    = useState("");
-  const [filterMinDegree,  setFilterMinDegree]  = useState(0);
-  const [filterMaxDist,    setFilterMaxDist]    = useState<number | "">("");
-  const [search,           setSearch]           = useState("");
+  const [filterContinent, setFilterContinent] = useState("");
+  const [filterCountry,   setFilterCountry]   = useState("");
+  const [filterMinDegree, setFilterMinDegree] = useState(0);
+  const [filterMaxDist,   setFilterMaxDist]   = useState<number | "">("");
+  const [search,          setSearch]          = useState("");
 
   const [pathFrom,    setPathFrom]    = useState("");
   const [pathTo,      setPathTo]      = useState("");
@@ -461,11 +496,10 @@ export default function Home() {
     setLoadError("");
     try {
       const params = new URLSearchParams();
-      if (filterContinent)   params.set("continent",  filterContinent);
-      if (filterCountry)     params.set("country",    filterCountry);
+      if (filterContinent)     params.set("continent",  filterContinent);
+      if (filterCountry)       params.set("country",    filterCountry);
       if (filterMinDegree > 0) params.set("min_degree", String(filterMinDegree));
       if (filterMaxDist !== "") params.set("max_dist",  String(filterMaxDist));
-
       const res = await fetch(`/api/graph?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setGraphData(await res.json());
@@ -532,8 +566,6 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden" style={{ background: "#020617", color: "#e2e8f0" }}>
-
-      {/* Left sidebar */}
       <div
         className="flex flex-col w-56 shrink-0 overflow-y-auto p-3 text-sm"
         style={{ background: "#0f172a", borderRight: "1px solid #1e293b" }}
@@ -680,9 +712,8 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Main SVG canvas */}
       <div className="flex-1 relative">
-        <GraphSVG
+        <GraphView
           data={graphData}
           selectedIata={selectedIata}
           pathIatas={pathIatas}
@@ -691,7 +722,6 @@ export default function Home() {
           sizeMode={sizeMode}
         />
 
-        {/* Shortest path input bar */}
         <div
           className="absolute top-3 left-1/2 -translate-x-1/2 rounded-lg px-3 py-2 text-xs flex gap-2 items-center"
           style={{ background: "rgba(15,23,42,0.88)", border: "1px solid #334155", minWidth: 340 }}
@@ -735,7 +765,6 @@ export default function Home() {
           )}
         </div>
 
-        {/* Path detail ribbon */}
         {pathResult?.success && (
           <div
             className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-lg px-3 py-2 text-xs max-w-2xl"
@@ -764,13 +793,12 @@ export default function Home() {
         )}
       </div>
 
-      {/* Right panel: node details */}
       <div
-        className="flex flex-col shrink-0 overflow-hidden transition-all duration-200"
+        className="flex-col shrink-0 overflow-hidden transition-all duration-200"
         style={{
+          display: selectedIata ? "flex" : "none",
           width: selectedIata ? 240 : 0,
-          borderLeft: selectedIata ? "1px solid #1e293b" : "none",
-          minWidth: 0,
+          borderLeft: "1px solid #1e293b",
         }}
       >
         {selectedIata && (

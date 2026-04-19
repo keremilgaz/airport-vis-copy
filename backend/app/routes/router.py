@@ -22,6 +22,9 @@ def assign_continent(row):
     c = row.get("continent")
     if c and str(c) not in ("nan", "None", ""):
         return str(c)
+    country = row.get('country', '')
+    if country in {'US', 'CA', 'PR'}:
+        return 'NA'
     return "Unknown"
 
 
