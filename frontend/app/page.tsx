@@ -6,7 +6,6 @@ import { feature } from "topojson-client";
 import type { Topology } from "topojson-specification";
 import { AirportNode, FlightEdge, GraphData, PathResult } from "@/types";
 
-// ---- Visual constants -------------------------------------------------------
 
 const CONTINENT_COLORS: Record<string, string> = {
   EU: "#3b82f6",
@@ -38,7 +37,6 @@ const RUNWAY_MAX = 7;
 export type ColorMode = "continent" | "runways";
 export type SizeMode  = "degree"    | "runways";
 
-// ---- Pure helpers -----------------------------------------------------------
 
 function nodeColor(
   node: AirportNode,
@@ -69,7 +67,6 @@ function nodeRadius(
   return isSelected ? base + 3 : base;
 }
 
-// ---- GraphSVG ---------------------------------------------------------------
 
 interface GraphSVGProps {
   data: GraphData;
@@ -90,9 +87,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
   const [worldGeo, setWorldGeo] = useState<GeoJSON.FeatureCollection | null>(null);
   const [dimensions, setDimensions] = useState({ w: 0, h: 0 });
 
-  // Projection recomputed whenever the container resizes or world data arrives.
-  // geoNaturalEarth1 fitted to the world map ensures airports land in the
-  // geographically correct position without any custom math.
   const projection = useMemo(() => {
     if (!worldGeo || dimensions.w === 0) return null;
     return d3.geoNaturalEarth1().fitSize([dimensions.w, dimensions.h], worldGeo);
@@ -103,7 +97,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
     [data.nodes],
   );
 
-  // O(1) lookups used during D3 selection updates
   const nodeMap = useMemo(
     () => new Map(data.nodes.map(n => [n.iata, n])),
     [data.nodes],
@@ -121,7 +114,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
     return s;
   }, [selectedIata, data.edges]);
 
-  // Track container size so the projection stays fitted on resize
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -133,7 +125,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
     return () => ro.disconnect();
   }, []);
 
-  // Set up D3 zoom once — attaches wheel/drag to the SVG and transforms <g>
   useEffect(() => {
     if (!svgRef.current || !gRef.current) return;
     const svg = d3.select(svgRef.current);
@@ -147,8 +138,7 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
     return () => { svg.on(".zoom", null); };
   }, []);
 
-  // Fetch world TopoJSON once and decode it with topojson-client.
-  // Previously this was a 50-line hand-rolled decoder; feature() replaces it.
+
   useEffect(() => {
     fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json")
       .then(r => r.json())
@@ -159,8 +149,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
       .catch(console.error);
   }, []);
 
-  // Render world map country paths whenever the projection changes.
-  // pointer-events: none so countries don't interfere with node clicks.
   useEffect(() => {
     if (!projection || !gRef.current || !worldGeo) return;
     const g       = d3.select(gRef.current);
@@ -179,21 +167,16 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
       .style("pointer-events", "none");
   }, [projection, worldGeo]);
 
-  // Render/update edges and nodes on every relevant state change.
-  // D3 data joins handle create / update / remove without a full redraw.
   useEffect(() => {
     if (!projection || !gRef.current) return;
     const g = d3.select(gRef.current);
 
-    // Build a set of edges that belong to the current shortest path
     const pathEdges = new Set<string>();
     for (let i = 0; i < pathIatas.length - 1; i++) {
       pathEdges.add(`${pathIatas[i]}|${pathIatas[i + 1]}`);
       pathEdges.add(`${pathIatas[i + 1]}|${pathIatas[i]}`);
     }
 
-    // Precompute per-node style state so accessor functions below don't
-    // duplicate logic or recompute for every attribute call
     const nodeState = new Map(
       data.nodes.map(d => {
         const isSelected = d.iata === selectedIata;
@@ -204,7 +187,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
       }),
     );
 
-    // Edges
     let edgesG = g.select<SVGGElement>(".edges");
     if (edgesG.empty()) edgesG = g.append("g").attr("class", "edges");
 
@@ -231,7 +213,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
       })
       .style("pointer-events", "none");
 
-    // Node groups — append circle + label text on enter, update both on every run
     let nodesG = g.select<SVGGElement>(".nodes");
     if (nodesG.empty()) nodesG = g.append("g").attr("class", "nodes");
 
@@ -329,7 +310,6 @@ function GraphSVG({ data, selectedIata, pathIatas, onSelect, colorMode, sizeMode
   );
 }
 
-// ---- NodeInfoPanel ----------------------------------------------------------
 
 interface NodeInfoPanelProps {
   iata: string;
@@ -445,8 +425,6 @@ function NodeInfoPanel({ iata, onClose, onPathFrom, onPathTo, pathFrom, pathTo }
     </div>
   );
 }
-
-// ---- Home (main page) -------------------------------------------------------
 
 export default function Home() {
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
