@@ -1,0 +1,63 @@
+name: airport-graph
+
+services:
+  database:
+    image: neo4j:5.26.4
+    container_name: airport-database
+    ports:
+      - "7474:7474"   # Neo4j Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=neo4j/ava25-DB!!
+      - NEO4J_server_memory_pagecache_size=1G
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_bolt_enabled=true
+      - NEO4J_server_http_enabled=true
+      - NEO4J_server_https_enabled=false
+      - NEO4J_dbms_usage__report_enabled=false
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "ava25-DB!!", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: airport-backend
+    image: airport-backend:latest
+    ports:
+      - "8080:8080"
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      - DB_HOST=airport-database
+      - DB_PASSWORD=ava25-DB!!
+      - PRODUCTION=false
+    volumes:
+      - ./backend/app/:/usr/src/app
+    working_dir: /usr/src/app
+
+  frontend:
+    container_name: airport-frontend
+    image: airport-frontend:latest
+    build:
+      context: ./frontend/
+      dockerfile: ./Dockerfile
+    environment:
+      NEXT_TELEMETRY_DISABLED: 1
+      PRODUCTION: "false"
+      BACKEND_URL: "http://airport-backend:8080"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  neo4j_data:
