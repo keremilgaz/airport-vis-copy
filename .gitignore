@@ -58,3 +58,5 @@ frontend/.env*
 # turbopack / bundler caches
 .turbo/
 .cache/
+# Windows mark-of-the-web junk
+*:Zone.Identifier
